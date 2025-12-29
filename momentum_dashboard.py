@@ -3,6 +3,7 @@ import yfinance as yf
 import datetime
 import pandas as pd
 import plotly.graph_objects as go
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
 def yt_finance_historical_data(symbols_list, momentum_back_date=4):
     """
@@ -138,6 +139,130 @@ def apply_custom_css():
         }
         </style>
     """, unsafe_allow_html=True)
+
+def create_aggrid_table(display_df, price_cols):
+    """Create AgGrid table with conditional formatting and filtering"""
+    
+    # Get date columns first (needed for price comparison logic)
+    date_columns = [col for col in display_df.columns if '2025-' in col]
+    
+    # JavaScript code for conditional formatting
+    cellStyle_momentum = JsCode("""
+    function(params) {
+        if (params.value == null || isNaN(params.value)) {
+            return {};
+        }
+        if (params.value > 0) {
+            return {
+                'backgroundColor': '#2E7D32',
+                'color': '#E8F5E9',
+                'fontWeight': 'bold'
+            };
+        } else {
+            return {
+                'backgroundColor': '#C62828',
+                'color': '#FFEBEE',
+                'fontWeight': 'bold'
+            };
+        }
+    }
+    """)
+    
+    # Prepare a mapping of date columns to their previous column for price comparison
+    date_col_pairs = {}
+    for i in range(1, len(date_columns)):
+        date_col_pairs[date_columns[i]] = date_columns[i-1]
+    
+    # Create individual cellStyle functions for each date column
+    def create_price_cellstyle(current_col, prev_col):
+        return JsCode(f"""
+        function(params) {{
+            if (params.value == null || isNaN(params.value)) {{
+                return {{}};
+            }}
+            
+            var prevValue = params.data['{prev_col}'];
+            
+            if (prevValue != null && !isNaN(prevValue)) {{
+                if (params.value > prevValue) {{
+                    return {{
+                        'backgroundColor': '#2E7D32',
+                        'color': '#E8F5E9',
+                        'fontWeight': 'bold'
+                    }};
+                }} else if (params.value < prevValue) {{
+                    return {{
+                        'backgroundColor': '#C62828',
+                        'color': '#FFEBEE',
+                        'fontWeight': 'bold'
+                    }};
+                }} else {{
+                    return {{
+                        'backgroundColor': '#F9A825',
+                        'color': '#FFFDE7',
+                        'fontWeight': 'bold'
+                    }};
+                }}
+            }}
+            return {{}};
+        }}
+        """)
+    
+    # Build grid options
+    gb = GridOptionsBuilder.from_dataframe(display_df)
+    
+    # Configure default column properties
+    gb.configure_default_column(
+        filterable=True,
+        sortable=True,
+        resizable=True,
+        editable=False
+    )
+    
+    # Configure specific columns
+    gb.configure_column("Rank", pinned='left', width=80)
+    gb.configure_column("Stock", pinned='left', width=150)
+    gb.configure_column("Momentum %", cellStyle=cellStyle_momentum, width=130)
+    gb.configure_column("Price Change", width=130)
+    
+    # Configure metadata columns if they exist
+    if "Cap Category" in display_df.columns:
+        gb.configure_column("Cap Category", width=120)
+    if "Rating" in display_df.columns:
+        gb.configure_column("Rating", width=100)
+    if "Category" in display_df.columns:
+        gb.configure_column("Category", width=120)
+    
+    # Configure price columns with conditional formatting
+    # First date column (no previous column to compare)
+    if len(date_columns) > 0:
+        gb.configure_column(date_columns[0], width=110)
+    
+    # Subsequent date columns with comparison to previous
+    for current_col, prev_col in date_col_pairs.items():
+        cellStyle = create_price_cellstyle(current_col, prev_col)
+        gb.configure_column(current_col, cellStyle=cellStyle, width=110)
+    
+    # Configure grid options
+    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)
+    gb.configure_side_bar()
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    
+    gridOptions = gb.build()
+    
+    # Display AgGrid
+    grid_response = AgGrid(
+        display_df,
+        gridOptions=gridOptions,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        fit_columns_on_grid_load=False,
+        theme='streamlit',  # Use streamlit theme for better integration
+        height=600,
+        allow_unsafe_jscode=True,
+        enable_enterprise_modules=False
+    )
+    
+    return grid_response
 
 def main():
     st.set_page_config(
@@ -295,210 +420,160 @@ def main():
         
         display_df.columns = column_names[:len(display_df.columns)]
         
-        # Apply conditional formatting and display
-        if len(price_cols) > 1:  # Only apply formatting if there are multiple price columns
-            def highlight_price_changes(row):
-                styles = [''] * len(row)
-                
-                # Find the index of 'Momentum %' column
-                momentum_idx = 2  # Default position
-                
-                # Style Momentum % column
-                momentum = row.iloc[momentum_idx]
-                if not pd.isna(momentum):
-                    if momentum > 0:
-                        # Green - works in both light and dark mode
-                        styles[momentum_idx] = 'background-color: #2E7D32; color: #E8F5E9; font-weight: bold'
-                    else:
-                        # Red - works in both light and dark mode
-                        styles[momentum_idx] = 'background-color: #C62828; color: #FFEBEE; font-weight: bold'
-                
-                # Find where price columns start (after metadata columns)
-                metadata_cols = ['Rank', 'Stock', 'Momentum %', 'Price Change']
-                if 'cap_category' in display_columns:
-                    metadata_cols.append('Cap Category')
-                if 'personal_rating' in display_columns:
-                    metadata_cols.append('Rating')
-                if 'symbol_category' in display_columns:
-                    metadata_cols.append('Category')
-                
-                price_start_idx = len(metadata_cols)
-                
-                # Apply to price columns
-                for i in range(price_start_idx + 1, len(row)):
-                    if not pd.isna(row.iloc[i]) and not pd.isna(row.iloc[i-1]):
-                        current_val = row.iloc[i]
-                        prev_val = row.iloc[i-1]
-                        
-                        if current_val > prev_val:
-                            # Green - works in both light and dark mode
-                            styles[i] = 'background-color: #2E7D32; color: #E8F5E9; font-weight: bold'
-                        elif current_val < prev_val:
-                            # Red - works in both light and dark mode
-                            styles[i] = 'background-color: #C62828; color: #FFEBEE; font-weight: bold'
-                        else:
-                            # Yellow/Orange - works in both light and dark mode
-                            styles[i] = 'background-color: #F9A825; color: #FFFDE7; font-weight: bold'
-                
-                return styles
+        # Create tabs for table and chart
+        tab_table, tab_chart = st.tabs(["📊 Data Table", "📈 Price Charts"])
+        
+        with tab_table:
+            st.info("💡 **Pro Tip:** Use the filter icon in column headers to filter data, click columns to sort, and use the sidebar menu (☰) for advanced options!")
             
-            styled_df = display_df.style.apply(highlight_price_changes, axis=1).format(precision=2)
+            # Display AgGrid table with filtering
+            grid_response = create_aggrid_table(display_df, price_cols)
             
-            # Create tabs for table and chart
-            tab_table, tab_chart = st.tabs(["📊 Data Table", "📈 Price Charts"])
-            
-            with tab_table:
-                st.dataframe(
-                    styled_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-            
-            with tab_chart:
-                # Stock selection
-                stock_options = display_df['Stock'].tolist()
-                selected_stock = st.selectbox(
-                    "Select Stock",
-                    stock_options,
-                    key="stock_selector"
-                )
-                
-                if selected_stock:
-                    # Get price data for selected stock
-                    stock_row = display_df[display_df['Stock'] == selected_stock].iloc[0]
-                    
-                    # Extract all available date columns and prices
-                    all_date_columns = [col for col in display_df.columns if '2025-' in col]
-                    all_prices = [stock_row[col] for col in all_date_columns]
-                    
-                    # Convert date strings to datetime objects
-                    date_objects = [pd.to_datetime(date) for date in all_date_columns]
-                    
-                    # Get available date range
-                    min_date = min(date_objects).date()
-                    max_date = max(date_objects).date()
-                    
-                    # Calculate default date range (last 7 days)
-                    default_end = max_date
-                    default_start = max_date - datetime.timedelta(days=6)
-                    if default_start < min_date:
-                        default_start = min_date
-                    
-                    # Date range selector
-                    st.write("### Select Date Range")
-                    col_date1, col_date2 = st.columns(2)
-                    
-                    with col_date1:
-                        start_date = st.date_input(
-                            "Start Date",
-                            value=default_start,
-                            min_value=min_date,
-                            max_value=max_date,
-                            key="start_date"
-                        )
-                    
-                    with col_date2:
-                        end_date = st.date_input(
-                            "End Date",
-                            value=default_end,
-                            min_value=min_date,
-                            max_value=max_date,
-                            key="end_date"
-                        )
-                    
-                    # Validate date range
-                    if start_date > end_date:
-                        st.error("❌ Start date must be before or equal to end date!")
-                        return
-                    
-                    # Filter data based on selected date range
-                    filtered_dates = []
-                    filtered_prices = []
-                    
-                    for date_str, price, date_obj in zip(all_date_columns, all_prices, date_objects):
-                        if start_date <= date_obj.date() <= end_date:
-                            filtered_dates.append(date_str)
-                            filtered_prices.append(price)
-                    
-                    if len(filtered_dates) == 0:
-                        st.warning("⚠️ No data available for the selected date range.")
-                        return
-                    
-                    # Create dataframe for chart
-                    chart_data = pd.DataFrame({
-                        'Date': filtered_dates,
-                        'Price': filtered_prices
-                    })
-                    
-                    # Display metrics
-                    current_price = filtered_prices[-1] if filtered_prices else 0
-                    first_price = filtered_prices[0] if filtered_prices else 0
-                    price_change = current_price - first_price
-                    price_change_pct = (price_change / first_price * 100) if first_price > 0 else 0
-                    
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    with metric_col1:
-                        st.metric("Current Price", f"₹{current_price:.2f}")
-                    with metric_col2:
-                        st.metric("Change", f"₹{price_change:.2f}", f"{price_change_pct:.2f}%")
-                    with metric_col3:
-                        momentum_pct = stock_row['Momentum %']
-                        st.metric("Momentum", f"{momentum_pct:.2f}%")
-                    
-                    # Create combined bar and line chart
-                    fig = go.Figure()
-                    
-                    # Add bar chart
-                    fig.add_trace(go.Bar(
-                        x=chart_data['Date'],
-                        y=chart_data['Price'],
-                        name='Price',
-                        marker_color='lightblue',
-                        opacity=0.6
-                    ))
-                    
-                    # Add line chart overlay with bright red
-                    fig.add_trace(go.Scatter(
-                        x=chart_data['Date'],
-                        y=chart_data['Price'],
-                        name='Trend',
-                        mode='lines+markers',
-                        line=dict(color='#FF0000', width=3),
-                        marker=dict(size=8, color='#FF0000')
-                    ))
-                    
-                    # Calculate dynamic y-axis range to show fluctuations
-                    min_price = min(filtered_prices)
-                    max_price = max(filtered_prices)
-                    price_range = max_price - min_price
-                    
-                    # Add 5% padding to top and bottom for better visualization
-                    padding = price_range * 0.05 if price_range > 0 else max_price * 0.05
-                    y_min = min_price - padding
-                    y_max = max_price + padding
-                    
-                    fig.update_layout(
-                        title=f"{selected_stock} Price Trend ({start_date} to {end_date})",
-                        xaxis_title="Date",
-                        yaxis_title="Price (₹)",
-                        hovermode='x unified',
-                        height=500,
-                        showlegend=True,
-                        xaxis=dict(tickangle=-45),
-                        yaxis=dict(range=[y_min, y_max])
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Show date range info
-                    num_days = len(filtered_dates)
-                    st.info(f"📅 Showing **{num_days} trading days** from {start_date} to {end_date}")
-        else:
-            st.dataframe(
-                display_df.style.format(precision=2),
-                use_container_width=True,
-                hide_index=True
+            # Show filtered results count
+            if grid_response is not None and 'data' in grid_response:
+                filtered_df = pd.DataFrame(grid_response['data'])
+                if len(filtered_df) < len(display_df):
+                    st.success(f"🔍 Showing {len(filtered_df)} of {len(display_df)} stocks (filtered)")
+        
+        with tab_chart:
+            # Stock selection
+            stock_options = display_df['Stock'].tolist()
+            selected_stock = st.selectbox(
+                "Select Stock",
+                stock_options,
+                key="stock_selector"
             )
+            
+            if selected_stock:
+                # Get price data for selected stock
+                stock_row = display_df[display_df['Stock'] == selected_stock].iloc[0]
+                
+                # Extract all available date columns and prices
+                all_date_columns = [col for col in display_df.columns if '2025-' in col]
+                all_prices = [stock_row[col] for col in all_date_columns]
+                
+                # Convert date strings to datetime objects
+                date_objects = [pd.to_datetime(date) for date in all_date_columns]
+                
+                # Get available date range
+                min_date = min(date_objects).date()
+                max_date = max(date_objects).date()
+                
+                # Calculate default date range (last 7 days)
+                default_end = max_date
+                default_start = max_date - datetime.timedelta(days=6)
+                if default_start < min_date:
+                    default_start = min_date
+                
+                # Date range selector
+                st.write("### Select Date Range")
+                col_date1, col_date2 = st.columns(2)
+                
+                with col_date1:
+                    start_date = st.date_input(
+                        "Start Date",
+                        value=default_start,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key="start_date"
+                    )
+                
+                with col_date2:
+                    end_date = st.date_input(
+                        "End Date",
+                        value=default_end,
+                        min_value=min_date,
+                        max_value=max_date,
+                        key="end_date"
+                    )
+                
+                # Validate date range
+                if start_date > end_date:
+                    st.error("❌ Start date must be before or equal to end date!")
+                    return
+                
+                # Filter data based on selected date range
+                filtered_dates = []
+                filtered_prices = []
+                
+                for date_str, price, date_obj in zip(all_date_columns, all_prices, date_objects):
+                    if start_date <= date_obj.date() <= end_date:
+                        filtered_dates.append(date_str)
+                        filtered_prices.append(price)
+                
+                if len(filtered_dates) == 0:
+                    st.warning("⚠️ No data available for the selected date range.")
+                    return
+                
+                # Create dataframe for chart
+                chart_data = pd.DataFrame({
+                    'Date': filtered_dates,
+                    'Price': filtered_prices
+                })
+                
+                # Display metrics
+                current_price = filtered_prices[-1] if filtered_prices else 0
+                first_price = filtered_prices[0] if filtered_prices else 0
+                price_change = current_price - first_price
+                price_change_pct = (price_change / first_price * 100) if first_price > 0 else 0
+                
+                metric_col1, metric_col2, metric_col3 = st.columns(3)
+                with metric_col1:
+                    st.metric("Current Price", f"₹{current_price:.2f}")
+                with metric_col2:
+                    st.metric("Change", f"₹{price_change:.2f}", f"{price_change_pct:.2f}%")
+                with metric_col3:
+                    momentum_pct = stock_row['Momentum %']
+                    st.metric("Momentum", f"{momentum_pct:.2f}%")
+                
+                # Create combined bar and line chart
+                fig = go.Figure()
+                
+                # Add bar chart
+                fig.add_trace(go.Bar(
+                    x=chart_data['Date'],
+                    y=chart_data['Price'],
+                    name='Price',
+                    marker_color='lightblue',
+                    opacity=0.6
+                ))
+                
+                # Add line chart overlay with bright red
+                fig.add_trace(go.Scatter(
+                    x=chart_data['Date'],
+                    y=chart_data['Price'],
+                    name='Trend',
+                    mode='lines+markers',
+                    line=dict(color='#FF0000', width=3),
+                    marker=dict(size=8, color='#FF0000')
+                ))
+                
+                # Calculate dynamic y-axis range to show fluctuations
+                min_price = min(filtered_prices)
+                max_price = max(filtered_prices)
+                price_range = max_price - min_price
+                
+                # Add 5% padding to top and bottom for better visualization
+                padding = price_range * 0.05 if price_range > 0 else max_price * 0.05
+                y_min = min_price - padding
+                y_max = max_price + padding
+                
+                fig.update_layout(
+                    title=f"{selected_stock} Price Trend ({start_date} to {end_date})",
+                    xaxis_title="Date",
+                    yaxis_title="Price (₹)",
+                    hovermode='x unified',
+                    height=500,
+                    showlegend=True,
+                    xaxis=dict(tickangle=-45),
+                    yaxis=dict(range=[y_min, y_max])
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show date range info
+                num_days = len(filtered_dates)
+                st.info(f"📅 Showing **{num_days} trading days** from {start_date} to {end_date}")
     else:
         st.info("👆 Select your preferred period and click 'Run Analysis' to start processing the momentum data.")
 
