@@ -255,7 +255,7 @@ def main():
             st.metric("Top Performer", f"{top_performer:.2f}%")
         
         # Display all performers with price history
-        price_cols = [col for col in valid_data.columns if '2025-' in str(col)]
+        price_cols = [col for col in valid_data.columns if str(col).strip().startswith('20') and '-' in str(col)]
         
         # Include additional metadata columns
         display_columns = ['Instrument', 'Diff_percent', 'DIFF', 'cap_category', 'personal_rating', 'symbol_category'] + price_cols
@@ -368,7 +368,7 @@ def main():
                     stock_row = display_df[display_df['Stock'] == selected_stock].iloc[0]
                     
                     # Extract all available date columns and prices
-                    all_date_columns = [col for col in display_df.columns if '2025-' in col]
+                    all_date_columns = [col for col in display_df.columns if str(col).strip().startswith('20') and '-' in str(col)]
                     all_prices = [stock_row[col] for col in all_date_columns]
                     
                     # Convert date strings to datetime objects
