@@ -3,3 +3,9 @@ pandas
 numpy
 yfinance
 plotly
+streamlit-aggrid
+
+# Google Sheets integration
+gspread>=6.2.1
+google-auth>=2.40.3
+google-auth-oauthlib>=1.2.2

@@ -83,17 +83,31 @@ def yt_finance_historical_data(symbols_list, momentum_back_date=4):
 
     return last_7, last_30
 
-@st.cache_data
+from standalone_gsheet_reader import read_google_sheet
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_metadata():
-    """Load instrument metadata"""
+    """Load instrument metadata from Google Sheets"""
     try:
-        df_metadata = pd.read_csv("METADATA.csv")
-    except FileNotFoundError:
+        # Pass None so it auto-reads the sheet_id from secrets.toml
+        df_metadata = read_google_sheet(sheet_id=None, worksheet_name="METADATA")
+        
+        # Keep numeric types as we had them from CSV
+        if 'personal_rating' in df_metadata.columns:
+            df_metadata['personal_rating'] = pd.to_numeric(df_metadata['personal_rating'], errors='coerce').fillna(0).astype(int)
+        if 'symbol_category' in df_metadata.columns:
+            df_metadata['symbol_category'] = pd.to_numeric(df_metadata['symbol_category'], errors='coerce').fillna(0).astype(int)
+            
+    except Exception as e:
+        st.error(f"Error loading metadata from Google Sheets: {str(e)}")
+        # Fallback to local file if needed
         try:
-            df_metadata = pd.read_csv("instruments_data.csv")
+            df_metadata = pd.read_csv("METADATA.csv")
+            st.warning("Fell back to local METADATA.csv")
         except FileNotFoundError:
-            st.error("Could not find METADATA.csv or instruments_data.csv")
+            st.error("Could not find METADATA.csv fallback either.")
             return None
+            
     return df_metadata
 
 def apply_custom_css():
@@ -160,6 +174,11 @@ def main():
     
     # Sidebar controls
     st.sidebar.header("Controls")
+    
+    st.sidebar.markdown(
+        "📊 [View Raw Data in Google Sheets](https://docs.google.com/spreadsheets/d/12dfjQ5Es9SzvDkpunehGN-R1lUT-Tp-3ujZZ9XKY4rU/edit?usp=sharing)"
+    )
+    st.sidebar.markdown("---")
     
     # Momentum lookback parameter
     momentum_back_date = st.sidebar.slider(
