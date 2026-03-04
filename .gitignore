@@ -205,3 +205,16 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Docker
+*.dockerignore.swp
+docker-compose.override.yml
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
