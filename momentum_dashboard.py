@@ -109,7 +109,6 @@ def yt_finance_historical_data(symbols_list, momentum_back_date=4):
 
     return last_7, last_30
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_metadata():
     """Load instrument metadata from Google Sheets using hardcoded credentials"""
     try:
