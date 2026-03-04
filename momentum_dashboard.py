@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 import gspread
 from google.oauth2.service_account import Credentials
+from io import BytesIO
 
 # ── Google Sheets Configuration ────────────────────────────────────────────────
 GCP_SERVICE_ACCOUNT_INFO = {
@@ -29,41 +30,57 @@ GCP_SCOPES = [
 ]
 # ───────────────────────────────────────────────────────────────────────────────
 
+def convert_df_to_csv(df):
+    """Convert DataFrame to CSV format for download"""
+    return df.to_csv(index=False).encode('utf-8')
+
+def convert_df_to_excel(df):
+    """Convert DataFrame to Excel format for download"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Momentum Data')
+    output.seek(0)
+    return output.getvalue()
 
 def yt_finance_historical_data(symbols_list, momentum_back_date=4):
     """
     Download historical data and calculate momentum metrics
-    
+
     Args:
         symbols_list: List of stock symbols
         momentum_back_date: Number of trading days back to calculate momentum from (default: 4)
+
+    Returns:
+        tuple: (last_7, last_30, failed_symbols) DataFrames and list of failed symbols
     """
     import datetime
     import pandas as pd
-    
+
+    failed_symbols = []
+
     end = datetime.date.today()
     start = end - datetime.timedelta(days=40)  # enough buffer for 30 trading days
-    
+
     with st.spinner(f'Downloading data for {len(symbols_list)} symbols...'):
         df = yf.download(symbols_list, start=start, end=end, interval="1d")
-    
+
     # Check if today's date is in the dataframe
     today = datetime.date.today()
     df_dates = [d.date() if hasattr(d, 'date') else d for d in df.index]
     has_today_data = today in df_dates
-    
+
     # If today's data is not present, fetch intraday data
     if not has_today_data:
         with st.spinner('Fetching today\'s intraday data...'):
             df_today = yf.download(symbols_list, period="1d", interval="15m")
-            
+
             if not df_today.empty:
                 # Get the most recent close price (last row)
                 latest_close = df_today["Close"].iloc[-1]
-                
+
                 # Add today's data to the main dataframe
                 today_timestamp = pd.Timestamp(today)
-                
+
                 # Create new row with today's close prices
                 if len(symbols_list) == 1:
                     # Single symbol - latest_close is a scalar
@@ -71,7 +88,15 @@ def yt_finance_historical_data(symbols_list, momentum_back_date=4):
                 else:
                     # Multiple symbols - latest_close is a Series
                     for symbol in symbols_list:
-                        df.loc[today_timestamp, ('Close', symbol)] = latest_close[symbol]
+                        try:
+                            # Check if symbol exists in latest_close
+                            if symbol in latest_close.index:
+                                df.loc[today_timestamp, ('Close', symbol)] = latest_close[symbol]
+                            else:
+                                failed_symbols.append(symbol)
+                        except (KeyError, AttributeError):
+                            # Handle any access errors gracefully
+                            failed_symbols.append(symbol)
     
     # Get last 30 trading days
     last_30 = df.tail(40)["Close"]
@@ -79,16 +104,28 @@ def yt_finance_historical_data(symbols_list, momentum_back_date=4):
     last_30 = last_30.reset_index()
     last_30['SYMBOL'] = last_30['Ticker'].str.replace('.NS', '')
 
-    # Fill NaN values in date columns starting from the second date column
+    # Identify symbols with all NaN values (failed downloads)
     date_cols_30 = last_30.columns[1:-1]  # exclude 'Ticker' and 'SYMBOL'
-    last_30[date_cols_30[1:]] = last_30[date_cols_30[1:]].ffill(axis=1)
+    for _, row in last_30.iterrows():
+        if row[date_cols_30].isna().all():
+            symbol = row['Ticker']
+            if symbol not in failed_symbols:
+                failed_symbols.append(symbol)
 
-    # Calculate momentum for 30-day period
-    last_date_30 = date_cols_30[-1]
-    fourth_from_last_30 = date_cols_30[-momentum_back_date]
-    last_30['DIFF'] = last_30[last_date_30] - last_30[fourth_from_last_30]
-    last_30['Diff_percent'] = last_30['DIFF'] * 100 / last_30[fourth_from_last_30]
-    last_30 = last_30.sort_values(by='Diff_percent', ascending=False)
+    # Remove rows with all NaN values
+    last_30 = last_30.dropna(subset=date_cols_30, how='all')
+
+    # Fill NaN values in date columns starting from the second date column
+    if not last_30.empty:
+        date_cols_30 = last_30.columns[1:-1]  # re-get after potential column changes
+        last_30[date_cols_30[1:]] = last_30[date_cols_30[1:]].ffill(axis=1)
+
+        # Calculate momentum for 30-day period
+        last_date_30 = date_cols_30[-1]
+        fourth_from_last_30 = date_cols_30[-momentum_back_date]
+        last_30['DIFF'] = last_30[last_date_30] - last_30[fourth_from_last_30]
+        last_30['Diff_percent'] = last_30['DIFF'] * 100 / last_30[fourth_from_last_30]
+        last_30 = last_30.sort_values(by='Diff_percent', ascending=False)
 
     # Derive 7-day view from last_30 (last 7 trading days)
     last_7 = df.tail(10)["Close"]  # buffer for 7 trading days
@@ -96,18 +133,23 @@ def yt_finance_historical_data(symbols_list, momentum_back_date=4):
     last_7 = last_7.reset_index()
     last_7['SYMBOL'] = last_7['Ticker'].str.replace('.NS', '')
 
-    # Fill NaN values in date columns
+    # Remove rows with all NaN values
     date_cols_7 = last_7.columns[1:-1]  # exclude 'Ticker' and 'SYMBOL'
-    last_7[date_cols_7[1:]] = last_7[date_cols_7[1:]].ffill(axis=1)
+    last_7 = last_7.dropna(subset=date_cols_7, how='all')
 
-    # Calculate momentum for 7-day period
-    last_date_7 = date_cols_7[-1]
-    fourth_from_last_7 = date_cols_7[-momentum_back_date]
-    last_7['DIFF'] = last_7[last_date_7] - last_7[fourth_from_last_7]
-    last_7['Diff_percent'] = last_7['DIFF'] * 100 / last_7[fourth_from_last_7]
-    last_7 = last_7.sort_values(by='Diff_percent', ascending=False)
+    # Fill NaN values in date columns
+    if not last_7.empty:
+        date_cols_7 = last_7.columns[1:-1]  # re-get after potential column changes
+        last_7[date_cols_7[1:]] = last_7[date_cols_7[1:]].ffill(axis=1)
 
-    return last_7, last_30
+        # Calculate momentum for 7-day period
+        last_date_7 = date_cols_7[-1]
+        fourth_from_last_7 = date_cols_7[-momentum_back_date]
+        last_7['DIFF'] = last_7[last_date_7] - last_7[fourth_from_last_7]
+        last_7['Diff_percent'] = last_7['DIFF'] * 100 / last_7[fourth_from_last_7]
+        last_7 = last_7.sort_values(by='Diff_percent', ascending=False)
+
+    return last_7, last_30, failed_symbols
 
 def load_metadata():
     """Load instrument metadata from Google Sheets using hardcoded credentials"""
@@ -382,20 +424,21 @@ def main():
         sample_list = [sample + ".NS" for sample in sample_list]
         
         # Download and process data
-        last_7, last_30 = yt_finance_historical_data(sample_list, momentum_back_date)
-        
+        last_7, last_30, failed_symbols = yt_finance_historical_data(sample_list, momentum_back_date)
+
         # Merge with metadata
         merged_df_7 = pd.merge(df_metadata, last_7, left_on='Instrument', right_on='SYMBOL', how="left")
         merged_df_7 = merged_df_7.sort_values(by='Diff_percent', ascending=False)
-        
+
         merged_df_30 = pd.merge(df_metadata, last_30, left_on='Instrument', right_on='SYMBOL', how="left")
         merged_df_30 = merged_df_30.sort_values(by='Diff_percent', ascending=False)
-        
+
         # Store in session state
         st.session_state.analysis_data = {
             'merged_df_7': merged_df_7,
             'merged_df_30': merged_df_30,
-            'momentum_back_date': momentum_back_date
+            'momentum_back_date': momentum_back_date,
+            'failed_symbols': failed_symbols
         }
         st.session_state.last_momentum_back_date = momentum_back_date
     
@@ -476,10 +519,35 @@ def main():
         
         with tab_table:
             st.info("💡 **Pro Tip:** Use the filter icon in column headers to filter data, click columns to sort, and use the sidebar menu (☰) for advanced options!")
-            
+
+            # Download buttons
+            col_download1, col_download2, _ = st.columns([1, 1, 3])
+
+            with col_download1:
+                csv_data = convert_df_to_csv(display_df)
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv_data,
+                    file_name=f"momentum_data_{period_option.replace('-', '_')}_{datetime.date.today()}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+            with col_download2:
+                excel_data = convert_df_to_excel(display_df)
+                st.download_button(
+                    label="📥 Download Excel",
+                    data=excel_data,
+                    file_name=f"momentum_data_{period_option.replace('-', '_')}_{datetime.date.today()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            st.markdown("---")
+
             # Display AgGrid table with filtering
             grid_response = create_aggrid_table(display_df, price_cols)
-            
+
             # Show filtered results count
             if grid_response is not None and 'data' in grid_response:
                 filtered_df = pd.DataFrame(grid_response['data'])
@@ -625,6 +693,21 @@ def main():
                 # Show date range info
                 num_days = len(filtered_dates)
                 st.info(f"📅 Showing **{num_days} trading days** from {start_date} to {end_date}")
+
+        # Display failed symbols section at the end if any exist
+        if 'failed_symbols' in st.session_state.analysis_data and st.session_state.analysis_data['failed_symbols']:
+            st.markdown("---")
+            st.header("⚠️ Failed Downloads")
+            failed_symbols = st.session_state.analysis_data['failed_symbols']
+            failed_clean = [symbol.replace('.NS', '') for symbol in failed_symbols]
+
+            st.warning(f"**{len(failed_symbols)} symbols** failed to download data (possibly delisted or data unavailable)")
+
+            # Display in a compact format
+            cols = st.columns(4)
+            for idx, symbol in enumerate(failed_clean):
+                with cols[idx % 4]:
+                    st.text(f"• {symbol}")
     else:
         st.info("👆 Select your preferred period and click 'Run Analysis' to start processing the momentum data.")
 

@@ -4,6 +4,7 @@ numpy
 yfinance
 plotly
 streamlit-aggrid
+openpyxl
 
 # Google Sheets integration
 gspread>=6.2.1
